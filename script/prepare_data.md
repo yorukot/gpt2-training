@@ -1,0 +1,7 @@
+- load C4 (train + validation)
+- val: skip the judge's 100k, take the next 10k
+- train: 64 workers, buffer-shuffled
+- delete exact duplicate documents
+- tokenize, truncate to 1024
+- best-fit into 1024 tokens (+ positions for doc masking)
+- save as .bin
