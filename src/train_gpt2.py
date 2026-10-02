@@ -22,10 +22,13 @@ TRAIN_SECONDS = 29 * 60        # stop training this long after the script starts
                                # 30-min Slurm limit covers torchrun startup, saving and the final eval
 
 LR = 1.8e-3
-MIN_LR = 1.8e-4
+MIN_LR = 0.0
 WARMUP_STEPS = 150
+DECAY_START = 0.0              # fraction of the training time at full LR before the linear decay
+                               # to MIN_LR (0.0 = decay right away, 0.5 = trapezoid)
 WEIGHT_DECAY = 0.1
 BETAS = (0.9, 0.95)
+ADAM_EPS = 1e-8
 GRAD_CLIP = 1.0
 DROPOUT = 0.0
 
@@ -71,11 +74,14 @@ def evaluate():
     return (total[0] / total[1]).item()
 
 
-def lr_at(step, elapsed):
-    """Linear warmup over WARMUP_STEPS, times cosine decay to MIN_LR over TRAIN_SECONDS."""
+def lr_at(step, progress):
+    """Linear warmup over WARMUP_STEPS, times LR held until DECAY_START, then linear decay to MIN_LR.
+
+    progress is the fraction of the training time done, from step 0 (after startup) to TRAIN_SECONDS.
+    """
     warmup = min(1.0, (step + 1) / WARMUP_STEPS)
-    progress = min(1.0, elapsed / TRAIN_SECONDS)
-    return warmup * (MIN_LR + 0.5 * (LR - MIN_LR) * (1 + math.cos(math.pi * progress)))
+    decay = min(1.0, max(0.0, (progress - DECAY_START) / (1 - DECAY_START)))
+    return warmup * (LR - (LR - MIN_LR) * decay)
 
 
 def elapsed_seconds():
@@ -121,7 +127,7 @@ optimizer = torch.optim.AdamW(
         {"params": [p for p in params if p.dim() >= 2], "weight_decay": WEIGHT_DECAY},
         {"params": [p for p in params if p.dim() < 2], "weight_decay": 0.0},
     ],
-    lr=LR, betas=BETAS, fused=True,
+    lr=LR, betas=BETAS, eps=ADAM_EPS, fused=True,
 )
 
 if rank == 0:
@@ -140,7 +146,9 @@ for step in range(max_steps):
         elapsed = elapsed_seconds()
         if elapsed >= TRAIN_SECONDS:
             break
-        lr = lr_at(step, elapsed)
+        if step == 0:
+            train_start = elapsed  # the schedule runs from here, after startup, to TRAIN_SECONDS
+        lr = lr_at(step, (elapsed - train_start) / (TRAIN_SECONDS - train_start))
         for group in optimizer.param_groups:
             group["lr"] = lr
 

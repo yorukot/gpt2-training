@@ -1,4 +1,4 @@
-lab4-yoru-AB-488543: varlen (flash) attention inside documents with fullgraph compile, vocab padded to 50304 (resized back before saving), 2B-token data/c4 (2,096,873 rows), pinned-memory batches, inductor cache in .cache/inductor
+lab4-yoru-AB-488543: varlen (flash) attention inside documents with fullgraph compile, vocab padded to 50304 (resized back before saving), 2B-token data/c4 (2,096,873 rows), pinned-memory batches, inductor cache in .cache/inductor; ~949k tok/s, 29:35 total, final val loss 3.3396 (ppl 28.21)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
