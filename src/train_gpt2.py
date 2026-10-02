@@ -5,7 +5,7 @@ import time
 import torch
 import torch.distributed as dist
 import wandb
-from torch.nn.attention.varlen import varlen_attn
+from flash_attn_interface import flash_attn_varlen_func
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AttentionInterface, GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
 
@@ -106,13 +106,15 @@ def varlen_attention(module, query, key, value, attention_mask, scaling=None, dr
     """Causal attention inside each document of the packed rows, split at cu_seq_lens_q.
 
     Same math as sdpa with HF's document mask, but no (rows, 1, SEQ_LEN, SEQ_LEN) mask is built
-    and no work is spent on blocks across documents. Training only: nothing of it is saved.
+    and no work is spent on blocks across documents. Uses the FlashAttention 3 (Hopper) kernels,
+    ~5.7% faster per micro-batch than PyTorch's built-in FA2 (script/fa3_check.py).
+    Training only: nothing of it is saved.
     """
     b, h, l, d = query.shape  # HF passes (batch, heads, seq, head_dim); varlen wants (tokens, heads, head_dim)
     q, k, v = (t.transpose(1, 2).reshape(b * l, h, d) for t in (query, key, value))
-    # window_size must be the tuple (-1, 0) to be causal; a list silently turns causal masking off.
-    out = varlen_attn(q, k, v, cu_seq_lens_q, cu_seq_lens_q, max_length_q, max_length_q,
-                      scale=scaling, window_size=(-1, 0))
+    # Dynamo can't trace an autograd.Function given the same tensor twice, hence the clone.
+    out = flash_attn_varlen_func(q, k, v, cu_seq_lens_q, cu_seq_lens_q.clone(), max_length_q, max_length_q,
+                                 softmax_scale=scaling, causal=True)
     return out.view(b, l, h, d), None
 
 
