@@ -1,4 +1,4 @@
-lab4-yoru-AL-489041: AJ with MUON_LR 0.02 -> 0.01 (AK at 0.04 was 0.08 behind AJ at step 1500)
+lab4-yoru-AL-489041: AJ with MUON_LR 0.02 -> 0.01 (AK at 0.04 was 0.08 behind AJ at step 1500); ~936k tok/s, 6,010 steps, 29:33 total, final val loss 3.2504 (ppl 25.80)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

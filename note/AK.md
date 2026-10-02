@@ -1,4 +1,4 @@
-lab4-yoru-AK-488996: AJ with MUON_LR 0.02 -> 0.04 (per-step Muon weight decay MUON_LR*MUON_WEIGHT_DECAY doubles to 2e-3 with it)
+lab4-yoru-AK-488996: AJ with MUON_LR 0.02 -> 0.04 (per-step Muon weight decay MUON_LR*MUON_WEIGHT_DECAY doubles to 2e-3 with it); ~942k tok/s, 6,040 steps, 29:28 total, final val loss 3.2956 (ppl 26.99)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

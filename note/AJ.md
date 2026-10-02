@@ -1,4 +1,4 @@
-lab4-yoru-AJ-488972: first Muon run (src/muon.py): Muon on the block matrices (Q/K/V separate, Newton-Schulz split over the 2 ranks), AdamW on embeddings/LayerNorms/biases; AD's 50% trapezoid schedule; vs AD (best AdamW). Replaces the cancelled AdamW AJ (488915, hung on 25a-hgpn146, never logged)
+lab4-yoru-AJ-488972: first Muon run (src/muon.py): Muon on the block matrices (Q/K/V separate, Newton-Schulz split over the 2 ranks), AdamW on embeddings/LayerNorms/biases; AD's 50% trapezoid schedule; vs AD (best AdamW). Replaces the cancelled AdamW AJ (488915, hung on 25a-hgpn146, never logged); ~938k tok/s, 6,010 steps, 29:33 total, final val loss 3.2626 (ppl 26.12); uploaded to HF yorukot/gpt2-traning (public) on 2026-10-03
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
