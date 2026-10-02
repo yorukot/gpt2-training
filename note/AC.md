@@ -1,4 +1,4 @@
-lab4-yoru-AC-488707: AB + LR schedule linear decay to 0 right after warmup (DECAY_START 0.0, MIN_LR 0), progress measured from step 0 instead of script start; ADAM_EPS constant added (still 1e-8)
+lab4-yoru-AC-488707: AB + LR schedule linear decay to 0 right after warmup (DECAY_START 0.0, MIN_LR 0), progress measured from step 0 instead of script start; ADAM_EPS constant added (still 1e-8); ~951k tok/s, 6,100 steps, 29:35 total, final val loss 3.3287 (ppl 27.90)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

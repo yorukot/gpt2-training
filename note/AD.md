@@ -1,4 +1,4 @@
-lab4-yoru-AD-488712: AC with a 50% trapezoid schedule (DECAY_START 0.5: full LR for the first half of training time, then linear decay to 0)
+lab4-yoru-AD-488712: AC with a 50% trapezoid schedule (DECAY_START 0.5: full LR for the first half of training time, then linear decay to 0); ~936k tok/s, 6,010 steps, 29:41 total, final val loss 3.3149 (ppl 27.52)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

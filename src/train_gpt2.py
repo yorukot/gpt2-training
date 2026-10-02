@@ -21,14 +21,15 @@ GRAD_ACCUM_STEPS = 2           # 64 * 2 * 2 GPUs = 256 rows per step
 TRAIN_SECONDS = 29 * 60        # stop training this long after the script starts; the rest of the
                                # 30-min Slurm limit covers torchrun startup, saving and the final eval
 
-LR = 1.8e-3
+LR = 3e-3
 MIN_LR = 0.0
-WARMUP_STEPS = 150
-DECAY_START = 0.0              # fraction of the training time at full LR before the linear decay
-                               # to MIN_LR (0.0 = decay right away, 0.5 = trapezoid)
+WARMUP_STEPS = 300
+DECAY_START = 0.5              # fraction of the training time at full LR before the decay to MIN_LR
+                               # (0.0 = decay right away, 0.5 = trapezoid)
+DECAY_SHAPE = "linear"         # "linear", "cosine" or "1-sqrt" (LR falls fast first, then slowly)
 WEIGHT_DECAY = 0.1
-BETAS = (0.9, 0.95)
-ADAM_EPS = 1e-8
+BETAS = (0.9, 0.98)
+ADAM_EPS = 1e-10
 GRAD_CLIP = 1.0
 DROPOUT = 0.0
 
@@ -75,12 +76,13 @@ def evaluate():
 
 
 def lr_at(step, progress):
-    """Linear warmup over WARMUP_STEPS, times LR held until DECAY_START, then linear decay to MIN_LR.
+    """Linear warmup over WARMUP_STEPS, times LR held until DECAY_START, then a DECAY_SHAPE decay to MIN_LR.
 
     progress is the fraction of the training time done, from step 0 (after startup) to TRAIN_SECONDS.
     """
     warmup = min(1.0, (step + 1) / WARMUP_STEPS)
-    decay = min(1.0, max(0.0, (progress - DECAY_START) / (1 - DECAY_START)))
+    t = min(1.0, max(0.0, (progress - DECAY_START) / (1 - DECAY_START)))  # how far into the decay
+    decay = {"linear": t, "cosine": 0.5 * (1 - math.cos(math.pi * t)), "1-sqrt": math.sqrt(t)}[DECAY_SHAPE]
     return warmup * (LR - (LR - MIN_LR) * decay)
 
 

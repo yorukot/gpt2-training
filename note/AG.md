@@ -1,4 +1,4 @@
-lab4-yoru-AG-488720: AC with a 2x batch, 524,288 tokens per step (GRAD_ACCUM_STEPS 2 -> 4), peak LR scaled by sqrt(2) to 2.5e-3
+lab4-yoru-AG-488720: AC with a 2x batch, 524,288 tokens per step (GRAD_ACCUM_STEPS 2 -> 4), peak LR scaled by sqrt(2) to 2.5e-3; ~956k tok/s, 3,100 steps, 29:27 total, final val loss 3.3693 (ppl 29.06)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

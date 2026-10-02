@@ -1,4 +1,4 @@
-lab4-yoru-AE-488715: AC with AdamW beta2 0.95 -> 0.98 and eps 1e-8 -> 1e-10
+lab4-yoru-AE-488715: AC with AdamW beta2 0.95 -> 0.98 and eps 1e-8 -> 1e-10; ~943k tok/s, 6,050 steps, 29:34 total, final val loss 3.3197 (ppl 27.65)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

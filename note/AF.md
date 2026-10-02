@@ -1,4 +1,4 @@
-lab4-yoru-AF-488719: AC with peak LR 1.8e-3 -> 3e-3 and warmup 150 -> 300 steps
+lab4-yoru-AF-488719: AC with peak LR 1.8e-3 -> 3e-3 and warmup 150 -> 300 steps; ~944k tok/s, 6,050 steps, 29:29 total, final val loss 3.3194 (ppl 27.64)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
