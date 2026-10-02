@@ -1,4 +1,4 @@
-lab4-yoru-AO-489121: AN with the AdamW LRs for the non-Muon params doubled: EMBED_LR and SCALAR_LR 3e-3 -> 6e-3
+lab4-yoru-AO-489121: AN with the AdamW LRs for the non-Muon params doubled: EMBED_LR and SCALAR_LR 3e-3 -> 6e-3; ~970k tok/s, 6,220 steps, 29:31 total, final val loss 3.2537 (ppl 25.89), no change vs AN
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

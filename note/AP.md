@@ -1,4 +1,4 @@
-lab4-yoru-AP-489132: AN with a 1.5x batch, 393,216 tokens per step (GRAD_ACCUM_STEPS 2 -> 3), all LRs unchanged
+lab4-yoru-AP-489132: AN with a 1.5x batch, 393,216 tokens per step (GRAD_ACCUM_STEPS 2 -> 3), all LRs unchanged; ~995k tok/s, 4,300 steps (1.69B tokens), 29:29 total, final val loss 3.2534 (ppl 25.88), no change vs AN (it led AN by 0.023 at equal tokens mid-run, gone after the cooldown)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

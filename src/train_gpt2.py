@@ -4,6 +4,8 @@ import time
 
 import torch
 import torch.distributed as dist
+import torch.nn as nn
+import torch.nn.functional as F
 import wandb
 from flash_attn_interface import flash_attn_varlen_func
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -18,7 +20,7 @@ SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
 VOCAB_SIZE = 50304             # GPT-2's 50257 padded to a multiple of 64 for faster matmuls;
                                # resized back to 50257 before saving
 MICRO_BATCH_SIZE = 64          # packed rows per GPU per forward pass
-GRAD_ACCUM_STEPS = 2           # 64 * 2 * 2 GPUs = 256 rows per step
+GRAD_ACCUM_STEPS = 1           # 64 * 1 * 2 GPUs = 128 rows per step
 TRAIN_SECONDS = 29 * 60        # stop training this long after the script starts; the rest of the
                                # 30-min Slurm limit covers torchrun startup, saving and the final eval
 
@@ -29,7 +31,7 @@ WARMUP_STEPS = 300             # AdamW only; Muon starts at its full LR
 BETAS = (0.9, 0.98)
 ADAM_EPS = 1e-10
 
-MUON_LR = 0.02                 # Muon on the 2D weights in the blocks
+MUON_LR = 0.007                # Muon on the 2D weights in the blocks
 MUON_WEIGHT_DECAY = 0.05       # decoupled: weights shrink by MUON_LR * MUON_WEIGHT_DECAY per step at peak
 MUON_MOMENTUM = 0.95
 MUON_MOMENTUM_START = 0.85     # raised linearly to MUON_MOMENTUM over MUON_MOMENTUM_WARMUP steps
@@ -43,7 +45,6 @@ GRAD_CLIP = 1.0
 DROPOUT = 0.0
 
 LOG_EVERY = 10
-EVAL_EVERY = 500
 SEED = 42
 # ------------------------------------
 
@@ -121,6 +122,31 @@ def varlen_attention(module, query, key, value, attention_mask, scaling=None, dr
 # A name HF has no mask function for, so it skips building the 4D mask.
 AttentionInterface.register("varlen", varlen_attention)
 
+
+class LMLoss(nn.Module):
+    """GPT-2 plus the next-token CE, returning only the loss.
+
+    GPT2LMHeadModel also returns the logits, so the compiled backward builds a (rows, SEQ_LEN, vocab)
+    zero grad for them every micro-step; returning only the loss is ~2% faster per step and 12 GiB
+    lighter, with the same loss (script/throughput_check.py). The saved weights are raw_model's.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids, position_ids, targets, cu_seqlens, max_len):
+        h = self.model.transformer(input_ids=input_ids, position_ids=position_ids,
+                                   cu_seq_lens_q=cu_seqlens, max_length_q=max_len).last_hidden_state
+        logits = F.linear(h, self.model.transformer.wte.weight)  # the tied lm_head
+        return F.cross_entropy(logits.view(-1, logits.size(-1)).float(), targets.view(-1))
+
+
+def shift(labels):
+    """HF ForCausalLMLoss's targets: labels moved left by one, with -100 at the end of each row."""
+    return F.pad(labels[:, 1:], (0, 1), value=-100)
+
+
 # GPT2Config defaults are GPT-2 small (12 layers, 12 heads, 768 dims) with GPT-1 style
 # N(0, 0.02) init. Only the vocab padding differs from stock, and it is undone before saving.
 config = GPT2Config(
@@ -129,8 +155,11 @@ config = GPT2Config(
 )
 with torch.device(device):
     raw_model = GPT2LMHeadModel(config)
-raw_model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward, which breaks the compiled graph
-model = DDP(torch.compile(raw_model, fullgraph=True), device_ids=[device])
+raw_model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward (evaluate() still uses HF's loss)
+# One compiled graph instead of DDPOptimizer's ~14 pieces: ~2% faster per step on 2 GPUs
+# (script/throughput_check.py). The grad all-reduce then waits for the whole backward, which costs less on NVLink.
+torch._dynamo.config.optimize_ddp = False
+model = DDP(torch.compile(LMLoss(raw_model), fullgraph=True), device_ids=[device])
 
 # Muon on the 2D weights in the blocks; AdamW on the embeddings (wte/lm_head and wpe), with weight
 # decay, and on the biases and LayerNorms, without. Optimizer only, so the saved weights are stock.
@@ -151,7 +180,8 @@ muon = Muon(blocks, lr=MUON_LR, weight_decay=MUON_WEIGHT_DECAY, momentum=MUON_MO
 optimizers = [adamw, muon]
 
 if rank == 0:
-    hyperparams = {k: v for k, v in globals().items() if k.isupper()}
+    # The constants only: `F` (torch.nn.functional) is upper case too but is a module.
+    hyperparams = {k: v for k, v in globals().items() if k.isupper() and isinstance(v, (int, float, str, tuple))}
     wandb.init(entity="cerulean-labs", project="gpt2-training", name=run_name, config=hyperparams)
 
 max_steps = len(train_rows[0]) // (MICRO_BATCH_SIZE * GRAD_ACCUM_STEPS * world)  # until the data runs out
@@ -181,10 +211,7 @@ for step in range(max_steps):
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)  # the document count varies; compile once for all
         model.require_backward_grad_sync = micro == GRAD_ACCUM_STEPS - 1  # sync grads on the last one
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(
-                input_ids=input_ids, position_ids=position_ids, labels=labels,
-                cu_seq_lens_q=cu_seqlens, max_length_q=SEQ_LEN,
-            ).loss / GRAD_ACCUM_STEPS
+            loss = model(input_ids, position_ids, shift(labels), cu_seqlens, SEQ_LEN) / GRAD_ACCUM_STEPS
         loss.backward()
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
     for opt in optimizers:
@@ -203,11 +230,7 @@ for step in range(max_steps):
             "time/elapsed": elapsed,
         }, step=step)
         last_log = now
-
-    if step % EVAL_EVERY == 0 and step > 0:
-        val_loss = evaluate()
-        if rank == 0:
-            wandb.log({"eval/loss": val_loss, "eval/perplexity": math.exp(val_loss)}, step=step)
+    # No eval during training: each one took 3.4 s, 2.3% of TRAIN_SECONDS over 12 evals (run AJ).
 else:
     if rank == 0:
         print(f"Warning: ran out of training data at step {max_steps} before {TRAIN_SECONDS}s")

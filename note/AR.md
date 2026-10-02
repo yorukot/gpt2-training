@@ -1,4 +1,4 @@
-lab4-yoru-AR-489208: AN (FA3) with MUON_LR 0.02 -> 0.005, to find where lowering the Muon LR stops helping
+lab4-yoru-AR-489208: AN (FA3) with MUON_LR 0.02 -> 0.005, to find where lowering the Muon LR stops helping; ~999k tok/s, 6,420 steps, 29:28 total, final val loss 3.2512 (ppl 25.82)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

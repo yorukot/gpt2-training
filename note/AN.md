@@ -1,4 +1,4 @@
-lab4-yoru-AN-489109: AJ config with FlashAttention 3 (flash_attn_interface.flash_attn_varlen_func called directly in varlen_attention, ~5% faster); new baseline for FA3 runs
+lab4-yoru-AN-489109: AJ config with FlashAttention 3 (flash_attn_interface.flash_attn_varlen_func called directly in varlen_attention, ~5% faster); new baseline for FA3 runs; ~987k tok/s, 6,320 steps (1.66B tokens), 29:32 total, final val loss 3.2537 (ppl 25.89)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

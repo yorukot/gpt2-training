@@ -19,8 +19,12 @@ GPT2_VOCAB = 50257             # GPT-J has 50400 logits: GPT-2's 50257 plus unus
 TOP_K = 8
 CHUNK_ROWS = 1024              # train rows per unit of work, ~35 s on one GPU; each gets a done marker
 TEACHER_ROWS = 1563 * CHUNK_ROWS  # 1,600,512 rows of room; a 29-min run uses ~1.54M
+FIRST_CHUNK = 344              # the chunks this job fills, first to END_CHUNK - 1, skipping done ones:
+END_CHUNK = 1563               # 0-343 (front) and 783-1102 (start of AN's LR decay, step 3,130 of
+                               # 6,320) are done, so this fills 344-782 (the rest of the flat phase)
+                               # first, then goes on from 1103
 TOKENS_PER_BATCH = 32_768      # documents per forward pass, counted with padding
-GEN_SECONDS = 26 * 60          # start no new chunk after this; the rest of the 30-min limit covers the last one
+GEN_SECONDS = 56 * 60          # start no new chunk after this; the rest of the 1-hour limit covers the last one
 # ------------------------------------
 
 START = time.time()
@@ -84,10 +88,10 @@ def teacher_chunk(row_tokens, row_positions):
     return idx.reshape(*row_tokens.shape, TOP_K), logp.reshape(*row_tokens.shape, TOP_K)
 
 
-# Chunks go round-robin over the ranks, so the finished ones form an almost unbroken prefix of the
-# train rows, which the student reads in order. Chunks with a done marker are skipped, so a later
-# job picks up where this one stopped.
-for chunk in range(rank, TEACHER_ROWS // CHUNK_ROWS, world):
+# Chunks go round-robin over the ranks, so the finished ones form an almost unbroken run from
+# FIRST_CHUNK, in the order the student reads the rows. Chunks with a done marker are skipped, so a
+# later job picks up where this one stopped.
+for chunk in range(FIRST_CHUNK + rank, END_CHUNK, world):
     if time.time() - START > GEN_SECONDS:
         break
     marker = out / "done" / f"{chunk:05d}"

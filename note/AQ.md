@@ -1,4 +1,4 @@
-lab4-yoru-AQ-489206: AN (FA3) with MUON_LR 0.02 -> 0.01, i.e. AL's best LR on FA3
+lab4-yoru-AQ-489206: AN (FA3) with MUON_LR 0.02 -> 0.01, i.e. AL's best LR on FA3; ~988k tok/s, 6,350 steps, 29:35 total, final val loss 3.2404 (ppl 25.54)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
