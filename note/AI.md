@@ -1,4 +1,4 @@
-lab4-yoru-AI-488912: AD with a 1-sqrt cooldown instead of linear (DECAY_SHAPE 1-sqrt, DECAY_START 0.5); curved cooldown vs AD
+lab4-yoru-AI-488912: AD with a 1-sqrt cooldown instead of linear (DECAY_SHAPE 1-sqrt, DECAY_START 0.5); curved cooldown vs AD; ~959k tok/s, 6,160 steps, 29:22 total, final val loss 3.3167 (ppl 27.57)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

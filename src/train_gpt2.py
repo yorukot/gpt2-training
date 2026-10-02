@@ -10,6 +10,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AttentionInterface, GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
 
 from data_load import get_batch, load_rows, train_batches
+from muon import Muon
 
 # Hyperparameters ------------------------
 DATA_DIR = "data/c4"
@@ -21,15 +22,23 @@ GRAD_ACCUM_STEPS = 2           # 64 * 2 * 2 GPUs = 256 rows per step
 TRAIN_SECONDS = 29 * 60        # stop training this long after the script starts; the rest of the
                                # 30-min Slurm limit covers torchrun startup, saving and the final eval
 
-LR = 3e-3
-MIN_LR = 0.0
-WARMUP_STEPS = 300
-DECAY_START = 0.5              # fraction of the training time at full LR before the decay to MIN_LR
-                               # (0.0 = decay right away, 0.5 = trapezoid)
-DECAY_SHAPE = "linear"         # "linear", "cosine" or "1-sqrt" (LR falls fast first, then slowly)
-WEIGHT_DECAY = 0.1
+EMBED_LR = 3e-3               # AdamW on the tied wte/lm_head and wpe
+EMBED_WEIGHT_DECAY = 0.1
+SCALAR_LR = 3e-3               # AdamW on the LayerNorms and biases, no weight decay
+WARMUP_STEPS = 300             # AdamW only; Muon starts at its full LR
 BETAS = (0.9, 0.98)
 ADAM_EPS = 1e-10
+
+MUON_LR = 0.02                 # Muon on the 2D weights in the blocks
+MUON_WEIGHT_DECAY = 0.05       # decoupled: weights shrink by MUON_LR * MUON_WEIGHT_DECAY per step at peak
+MUON_MOMENTUM = 0.95
+MUON_MOMENTUM_START = 0.85     # raised linearly to MUON_MOMENTUM over MUON_MOMENTUM_WARMUP steps
+MUON_MOMENTUM_WARMUP = 300
+
+MIN_LR_RATIO = 0.0             # final LR of every group, as a fraction of its peak LR
+DECAY_START = 0.5              # fraction of the training time at full LR before the decay to MIN_LR_RATIO
+                               # (0.0 = decay right away, 0.5 = trapezoid)
+DECAY_SHAPE = "linear"         # "linear", "cosine" or "1-sqrt" (LR falls fast first, then slowly)
 GRAD_CLIP = 1.0
 DROPOUT = 0.0
 
@@ -75,15 +84,14 @@ def evaluate():
     return (total[0] / total[1]).item()
 
 
-def lr_at(step, progress):
-    """Linear warmup over WARMUP_STEPS, times LR held until DECAY_START, then a DECAY_SHAPE decay to MIN_LR.
+def lr_decay(progress):
+    """LR multiplier: 1 until DECAY_START, then a DECAY_SHAPE decay to MIN_LR_RATIO.
 
     progress is the fraction of the training time done, from step 0 (after startup) to TRAIN_SECONDS.
     """
-    warmup = min(1.0, (step + 1) / WARMUP_STEPS)
     t = min(1.0, max(0.0, (progress - DECAY_START) / (1 - DECAY_START)))  # how far into the decay
     decay = {"linear": t, "cosine": 0.5 * (1 - math.cos(math.pi * t)), "1-sqrt": math.sqrt(t)}[DECAY_SHAPE]
-    return warmup * (LR - (LR - MIN_LR) * decay)
+    return 1 - (1 - MIN_LR_RATIO) * decay
 
 
 def elapsed_seconds():
@@ -122,15 +130,23 @@ with torch.device(device):
 raw_model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward, which breaks the compiled graph
 model = DDP(torch.compile(raw_model, fullgraph=True), device_ids=[device])
 
-# Weight decay on matrices only, not on biases and LayerNorms.
-params = list(raw_model.parameters())  # Tied wte/lm_head is listed once.
-optimizer = torch.optim.AdamW(
+# Muon on the 2D weights in the blocks; AdamW on the embeddings (wte/lm_head and wpe), with weight
+# decay, and on the biases and LayerNorms, without. Optimizer only, so the saved weights are stock.
+blocks = [(b.attn.c_attn.weight, b.attn.c_proj.weight, b.mlp.c_fc.weight, b.mlp.c_proj.weight)
+          for b in raw_model.transformer.h]
+muon_ids = {id(p) for block in blocks for p in block}
+rest = [p for p in raw_model.parameters() if id(p) not in muon_ids]  # Tied wte/lm_head is listed once.
+embeds, scalars = [p for p in rest if p.dim() >= 2], [p for p in rest if p.dim() < 2]
+assert len(embeds) == 2, "only wte and wpe should be left for AdamW among the matrices"
+adamw = torch.optim.AdamW(
     [
-        {"params": [p for p in params if p.dim() >= 2], "weight_decay": WEIGHT_DECAY},
-        {"params": [p for p in params if p.dim() < 2], "weight_decay": 0.0},
+        {"params": embeds, "lr": EMBED_LR, "base_lr": EMBED_LR, "weight_decay": EMBED_WEIGHT_DECAY},
+        {"params": scalars, "lr": SCALAR_LR, "base_lr": SCALAR_LR, "weight_decay": 0.0},
     ],
-    lr=LR, betas=BETAS, eps=ADAM_EPS, fused=True,
+    betas=BETAS, eps=ADAM_EPS, fused=True,
 )
+muon = Muon(blocks, lr=MUON_LR, weight_decay=MUON_WEIGHT_DECAY, momentum=MUON_MOMENTUM_START)
+optimizers = [adamw, muon]
 
 if rank == 0:
     hyperparams = {k: v for k, v in globals().items() if k.isupper()}
@@ -150,9 +166,13 @@ for step in range(max_steps):
             break
         if step == 0:
             train_start = elapsed  # the schedule runs from here, after startup, to TRAIN_SECONDS
-        lr = lr_at(step, (elapsed - train_start) / (TRAIN_SECONDS - train_start))
-        for group in optimizer.param_groups:
-            group["lr"] = lr
+        decay = lr_decay((elapsed - train_start) / (TRAIN_SECONDS - train_start))
+        warmup = min(1.0, (step + 1) / WARMUP_STEPS)
+        for group in adamw.param_groups:
+            group["lr"] = group["base_lr"] * warmup * decay
+        muon.param_groups[0]["lr"] = MUON_LR * decay
+        muon.param_groups[0]["momentum"] = MUON_MOMENTUM_START + (
+            MUON_MOMENTUM - MUON_MOMENTUM_START) * min(1.0, step / MUON_MOMENTUM_WARMUP)
 
     for micro in range(GRAD_ACCUM_STEPS):
         input_ids, position_ids, labels, cu_seqlens = next(batches)
@@ -165,14 +185,17 @@ for step in range(max_steps):
             ).loss / GRAD_ACCUM_STEPS
         loss.backward()
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
+    for opt in optimizers:
+        opt.step()
+        opt.zero_grad(set_to_none=True)
 
     if rank == 0 and step % LOG_EVERY == 0:
         now = time.time()
         wandb.log({
             "train/loss": loss.item() * GRAD_ACCUM_STEPS,
-            "train/lr": lr,
+            "train/lr": adamw.param_groups[0]["lr"],
+            "train/muon_lr": muon.param_groups[0]["lr"],
+            "train/muon_momentum": muon.param_groups[0]["momentum"],
             "train/grad_norm": grad_norm.item(),
             "train/tokens_per_sec": tokens_per_step * (LOG_EVERY if step else 1) / (now - last_log),
             "time/elapsed": elapsed,

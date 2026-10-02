@@ -1,4 +1,4 @@
-lab4-yoru-AH-488905: AC with a cosine decay to 0 instead of linear (DECAY_SHAPE cosine, DECAY_START 0.0); isolates the decay shape vs AC
+lab4-yoru-AH-488905: AC with a cosine decay to 0 instead of linear (DECAY_SHAPE cosine, DECAY_START 0.0); isolates the decay shape vs AC; ~948k tok/s, 6,070 steps, 29:34 total, final val loss 3.3461 (ppl 28.39)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
