@@ -17,4 +17,9 @@ export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 PYTHONUNBUFFERED=1
 # Keep torch.compile's cache in the project, not node-local /tmp, so later jobs skip most compiling.
 export TORCHINDUCTOR_CACHE_DIR="$SLURM_SUBMIT_DIR/.cache/inductor"
 
+# Queue the stock GPT-2 conversion and the val eval behind this job (afterany: also after a timeout),
+# so only training counts against the 30 minutes. A failed submit must not stop the training.
+sbatch --dependency=afterany:"$SLURM_JOB_ID" script/finalize.sbatch "$RUN_NAME" \
+    || echo "Could not queue script/finalize.sbatch; run it by hand for $RUN_NAME"
+
 exec .venv-gpu/bin/python -m torch.distributed.run --standalone --nproc_per_node=2 src/train_gpt2.py

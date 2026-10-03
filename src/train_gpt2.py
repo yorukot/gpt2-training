@@ -9,9 +9,9 @@ import torch.nn.functional as F
 import wandb
 from flash_attn_interface import flash_attn_varlen_func
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import AttentionInterface, GPT2Config, GPT2LMHeadModel, GPT2Tokenizer
+from transformers import AttentionInterface, GPT2Config, GPT2LMHeadModel
 
-from data_load import get_batch, load_rows, train_batches
+from data_load import load_rows, load_teacher, teacher_batches, train_batches
 from muon import Muon
 
 # Hyperparameters ------------------------
@@ -21,8 +21,9 @@ VOCAB_SIZE = 50304             # GPT-2's 50257 padded to a multiple of 64 for fa
                                # resized back to 50257 before saving
 MICRO_BATCH_SIZE = 64          # packed rows per GPU per forward pass
 GRAD_ACCUM_STEPS = 2           # 64 * 2 * 2 GPUs = 256 rows per step
-TRAIN_SECONDS = 29 * 60        # stop training this long after the script starts; the rest of the
-                               # 30-min Slurm limit covers torchrun startup, saving and the final eval
+TRAIN_SECONDS = 29 * 60 + 20   # stop training this long after the script starts; the rest of the
+                               # 30-min Slurm limit covers torchrun startup (~17 s), dumping the raw
+                               # weights and wandb.finish(). script/finalize.py converts and evaluates later.
 
 EMBED_LR = 3e-3               # AdamW on the tied wte/lm_head and wpe
 EMBED_WEIGHT_DECAY = 0.1
@@ -31,7 +32,7 @@ WARMUP_STEPS = 300             # AdamW only; Muon starts at its full LR
 BETAS = (0.9, 0.98)
 ADAM_EPS = 1e-10
 
-MUON_LR = 0.02                 # Muon on the 2D weights in the blocks
+MUON_LR = 0.01                 # Muon on the 2D weights in the blocks
 MUON_WEIGHT_DECAY = 0.05       # decoupled: weights shrink by MUON_LR * MUON_WEIGHT_DECAY per step at peak
 MUON_MOMENTUM = 0.95
 MUON_MOMENTUM_START = 0.85     # raised linearly to MUON_MOMENTUM over MUON_MOMENTUM_WARMUP steps
@@ -43,6 +44,12 @@ DECAY_START = 0.5              # fraction of the training time at full LR before
 DECAY_SHAPE = "linear"         # "linear", "cosine" or "1-sqrt" (LR falls fast first, then slowly)
 GRAD_CLIP = 1.0
 DROPOUT = 0.0
+
+TEACHER_DIR = "/work/u9603854/gpt2/teacher/gpt-j-6b"  # GPT-J-6B's top-8 per position (script/teacher_logits.py)
+KD_ROWS = (0, 1_861_632)       # (first, end): train rows distilled from the teacher, the rest plain CE;
+                               # None = no distillation. (0, 1_861_632) = teacher chunks 0-1817, the
+                               # whole run (~6,500 steps x 256 rows at ~986k tok/s)
+KD_CE_WEIGHT = 0.6             # weight of the hard-label CE inside KD_ROWS; the KD loss gets the rest
 
 LOG_EVERY = 10
 SEED = 42
@@ -60,29 +67,6 @@ run_name = os.environ.get("RUN_NAME", "gpt2-local")  # Set by train.sbatch.
 tokens_per_step = MICRO_BATCH_SIZE * SEQ_LEN * GRAD_ACCUM_STEPS * world  # including padding
 
 train_rows = load_rows(DATA_DIR, "train", SEQ_LEN)
-val_rows = load_rows(DATA_DIR, "val", SEQ_LEN)
-
-
-@torch.no_grad()
-def evaluate():
-    """Corpus loss over the val rows like the judge: total loss / total scored tokens."""
-    raw_model.eval()
-    num_rows = len(val_rows[0])
-    total = torch.zeros(2, device=device)  # (loss sum, token count)
-    for start in range(rank * MICRO_BATCH_SIZE, num_rows, MICRO_BATCH_SIZE * world):
-        input_ids, position_ids, labels, cu_seqlens = get_batch(
-            val_rows, start, min(start + MICRO_BATCH_SIZE, num_rows), device
-        )
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = raw_model(
-                input_ids=input_ids, position_ids=position_ids, labels=labels,
-                cu_seq_lens_q=cu_seqlens, max_length_q=SEQ_LEN,
-            ).loss
-        count = (labels[:, 1:] != -100).sum()  # HF shifts labels; the first token is not scored
-        total += torch.stack([loss.float() * count, count.float()])
-    dist.all_reduce(total)
-    raw_model.train()
-    return (total[0] / total[1]).item()
 
 
 def lr_decay(progress):
@@ -124,22 +108,42 @@ AttentionInterface.register("varlen", varlen_attention)
 
 
 class LMLoss(nn.Module):
-    """GPT-2 plus the next-token CE, returning only the loss.
+    """GPT-2 plus the next-token loss, returning (loss, CE, KD) and no logits.
 
     GPT2LMHeadModel also returns the logits, so the compiled backward builds a (rows, SEQ_LEN, vocab)
     zero grad for them every micro-step; returning only the loss is ~2% faster per step and 12 GiB
     lighter, with the same loss (script/throughput_check.py). The saved weights are raw_model's.
+
+    loss = (1 - kd_weight) * CE + kd_weight * KD, both means over the scored tokens. KD is the cross
+    entropy against the teacher's top k (t_idx, t_logp: full-vocab log-probs) plus one bucket for the
+    rest of its probability, so the student keeps the teacher's mass outside the top k instead of
+    pushing it to 0. kd_weight is a tensor, so switching distillation on and off never recompiles;
+    without a teacher the batch gets zeros for t_idx/t_logp and kd_weight 0.
     """
 
     def __init__(self, model):
         super().__init__()
         self.model = model
 
-    def forward(self, input_ids, position_ids, targets, cu_seqlens, max_len):
+    def forward(self, input_ids, position_ids, targets, cu_seqlens, max_len, t_idx, t_logp, kd_weight):
         h = self.model.transformer(input_ids=input_ids, position_ids=position_ids,
                                    cu_seq_lens_q=cu_seqlens, max_length_q=max_len).last_hidden_state
-        logits = F.linear(h, self.model.transformer.wte.weight)  # the tied lm_head
-        return F.cross_entropy(logits.view(-1, logits.size(-1)).float(), targets.view(-1))
+        # The tied lm_head, bf16 under autocast. Upcasting only inside the logsumexp and the gathers keeps
+        # a fp32 copy of the (rows, SEQ_LEN, vocab) logits out of memory: 986k vs 916k tok/s with the
+        # same loss (.cache/kd_bench, K2 vs K1).
+        logits = F.linear(h, self.model.transformer.wte.weight)
+        scored = targets != -100
+        lse = logits.float().logsumexp(-1)
+        ce = lse - logits.gather(-1, targets.clamp_min(0).unsqueeze(-1)).squeeze(-1).float()
+        s_top = logits.gather(-1, t_idx).float() - lse.unsqueeze(-1)  # the student's log-probs of the teacher's top k
+        p_top = t_logp.exp()
+        p_rest = (1 - p_top.sum(-1)).clamp_min(0)
+        s_rest = torch.log1p(-s_top.exp().sum(-1).clamp(max=1 - 1e-6))
+        kd = -(p_top * s_top).sum(-1) - p_rest * s_rest
+        count = scored.sum()
+        ce = torch.where(scored, ce, 0).sum() / count
+        kd = torch.where(scored, kd, 0).sum() / count
+        return (1 - kd_weight) * ce + kd_weight * kd, ce.detach(), kd.detach()
 
 
 def shift(labels):
@@ -155,7 +159,7 @@ config = GPT2Config(
 )
 with torch.device(device):
     raw_model = GPT2LMHeadModel(config)
-raw_model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward (evaluate() still uses HF's loss)
+raw_model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward
 # One compiled graph instead of DDPOptimizer's ~14 pieces: ~2% faster per step on 2 GPUs
 # (script/throughput_check.py). The grad all-reduce then waits for the whole backward, which costs less on NVLink.
 torch._dynamo.config.optimize_ddp = False
@@ -188,14 +192,30 @@ max_steps = len(train_rows[0]) // (MICRO_BATCH_SIZE * GRAD_ACCUM_STEPS * world) 
 if rank == 0:
     print(f"Training for {TRAIN_SECONDS}s (at most {max_steps} steps), {tokens_per_step:,} tokens per step including padding")
 
+teacher, top_k = None, 1  # without distillation the zero teacher tensors only need some shape
+if KD_ROWS is not None:
+    *teacher, done_chunks, chunk_rows = load_teacher(TEACHER_DIR, SEQ_LEN)
+    top_k = teacher[0].shape[-1]
+    missing = [c for c in range(KD_ROWS[0] // chunk_rows, -(-KD_ROWS[1] // chunk_rows)) if c not in done_chunks]
+    assert not missing, f"KD_ROWS {KD_ROWS} needs teacher chunks that are not done: {missing[:10]}"
+no_teacher = (torch.zeros(MICRO_BATCH_SIZE, SEQ_LEN, top_k, dtype=torch.long, device=device),
+              torch.zeros(MICRO_BATCH_SIZE, SEQ_LEN, top_k, device=device))
+kd_on, kd_off = (torch.tensor(w, device=device) for w in (1 - KD_CE_WEIGHT, 0.0))
+alignment_checked = False
+
 batches = train_batches(train_rows, MICRO_BATCH_SIZE, rank, world, device)
+teachers = teacher_batches(teacher, MICRO_BATCH_SIZE, rank, world, device, KD_ROWS)
 last_log = time.time()
+last_check = None  # elapsed at the previous check, for the step time
 step = 0
 for step in range(max_steps):
     if step % LOG_EVERY == 0:  # checked every LOG_EVERY steps, since the broadcast waits for the GPU
         elapsed = elapsed_seconds()
-        if elapsed >= TRAIN_SECONDS:
+        # Stop if the next LOG_EVERY steps would end past TRAIN_SECONDS, so training never overruns it.
+        step_seconds = (elapsed - last_check) / LOG_EVERY if last_check is not None else 0.0
+        if elapsed + LOG_EVERY * step_seconds >= TRAIN_SECONDS:
             break
+        last_check = elapsed
         if step == 0:
             train_start = elapsed  # the schedule runs from here, after startup, to TRAIN_SECONDS
         decay = lr_decay((elapsed - train_start) / (TRAIN_SECONDS - train_start))
@@ -208,11 +228,21 @@ for step in range(max_steps):
 
     for micro in range(GRAD_ACCUM_STEPS):
         input_ids, position_ids, labels, cu_seqlens = next(batches)
+        teacher_batch = next(teachers)
         torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)  # the document count varies; compile once for all
+        targets = shift(labels)
+        if teacher_batch is not None and not alignment_checked:
+            alignment_checked = True
+            if rank == 0:  # an off-by-one between the teacher and the targets would show far less
+                hit = (teacher_batch[0] == targets.unsqueeze(-1)).any(-1)[targets != -100].float().mean().item()
+                print(f"Teacher alignment at step {step}: target in the teacher's top-{top_k} for {hit:.3f} "
+                      f"of the scored tokens (~0.76 expected)")
+        t_idx, t_logp = teacher_batch or no_teacher
+        kd_weight = kd_on if teacher_batch is not None else kd_off
         model.require_backward_grad_sync = micro == GRAD_ACCUM_STEPS - 1  # sync grads on the last one
         with torch.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(input_ids, position_ids, shift(labels), cu_seqlens, SEQ_LEN) / GRAD_ACCUM_STEPS
-        loss.backward()
+            loss, ce, kd = model(input_ids, position_ids, targets, cu_seqlens, SEQ_LEN, t_idx, t_logp, kd_weight)
+        (loss / GRAD_ACCUM_STEPS).backward()
     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
     for opt in optimizers:
         opt.step()
@@ -221,7 +251,11 @@ for step in range(max_steps):
     if rank == 0 and step % LOG_EVERY == 0:
         now = time.time()
         wandb.log({
-            "train/loss": loss.item() * GRAD_ACCUM_STEPS,
+            "train/loss": loss.item(),
+            "train/ce": ce.item(),
+            # Without a teacher kd is computed against the zero tensors, so only log it with one.
+            **({"train/kd": kd.item()} if teacher_batch is not None else {}),
+            "train/kd_weight": kd_weight.item(),
             "train/lr": adamw.param_groups[0]["lr"],
             "train/muon_lr": muon.param_groups[0]["lr"],
             "train/muon_momentum": muon.param_groups[0]["momentum"],
@@ -235,20 +269,11 @@ else:
     if rank == 0:
         print(f"Warning: ran out of training data at step {max_steps} before {TRAIN_SECONDS}s")
 
-# Back to stock GPT-2's 50257 rows (wte and the tied lm_head), so the saved model is plain GPT-2.
-# The dropped rows are never targets, so removing them only lowers the loss.
-raw_model.resize_token_embeddings(GPT2Config().vocab_size)
-
-# Save before the final eval so a timeout during eval still keeps the model.
+# Only the raw weights (padded vocab) are written inside the 30-min limit. script/finalize.py, which
+# train.sbatch queues behind this job, saves the stock GPT-2 model to outputs/<run> and runs the eval.
 if rank == 0:
-    out_dir = f"outputs/{run_name}"
-    raw_model.save_pretrained(out_dir)
-    GPT2Tokenizer.from_pretrained(f"{DATA_DIR}/tokenizer").save_pretrained(out_dir)
-    print(f"Saved to {out_dir}")
-
-val_loss = evaluate()
-if rank == 0:
-    wandb.log({"eval/loss": val_loss, "eval/perplexity": math.exp(val_loss)}, step=step)
-    print(f"Final eval loss {val_loss:.4f}, perplexity {math.exp(val_loss):.2f}")
+    os.makedirs("outputs", exist_ok=True)
+    torch.save(raw_model.state_dict(), f"outputs/{run_name}.raw.pt")
+    print(f"Saved the raw weights to outputs/{run_name}.raw.pt after {step} steps")
     wandb.finish()
 dist.destroy_process_group()

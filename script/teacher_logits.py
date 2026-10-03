@@ -13,16 +13,15 @@ from data_load import PAD, load_rows
 TEACHER = "EleutherAI/gpt-j-6b"
 REVISION = "float16"           # half the download of the fp32 main branch
 DATA_DIR = "data/c4"
-OUT_DIR = "/work/u9603854/gpt2/teacher/gpt-j-6b"  # ~52 GB when full; home has no room for it
+OUT_DIR = "/work/u9603854/gpt2/teacher/gpt-j-6b"  # ~69 GB when full; home has no room for it
 SEQ_LEN = 1024
 GPT2_VOCAB = 50257             # GPT-J has 50400 logits: GPT-2's 50257 plus unused padding
 TOP_K = 8
 CHUNK_ROWS = 1024              # train rows per unit of work, ~35 s on one GPU; each gets a done marker
-TEACHER_ROWS = 1563 * CHUNK_ROWS  # 1,600,512 rows of room; a 29-min run uses ~1.54M
-FIRST_CHUNK = 344              # the chunks this job fills, first to END_CHUNK - 1, skipping done ones:
-END_CHUNK = 1563               # 0-343 (front) and 783-1102 (start of AN's LR decay, step 3,130 of
-                               # 6,320) are done, so this fills 344-782 (the rest of the flat phase)
-                               # first, then goes on from 1103
+TEACHER_ROWS = 2047 * CHUNK_ROWS  # 2,096,128 rows: every full chunk of data/c4's 2,096,873 train rows
+                               # (AS's 29-min run reads 1,730,560); the files grow sparsely to this
+FIRST_CHUNK = 1401             # the chunks this job fills, first to END_CHUNK - 1, skipping done ones:
+END_CHUNK = 2047               # 0-1400 are done, so this fills the rest
 TOKENS_PER_BATCH = 32_768      # documents per forward pass, counted with padding
 GEN_SECONDS = 56 * 60          # start no new chunk after this; the rest of the 1-hour limit covers the last one
 # ------------------------------------
