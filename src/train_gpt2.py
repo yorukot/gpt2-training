@@ -20,7 +20,7 @@ SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
 VOCAB_SIZE = 50304             # GPT-2's 50257 padded to a multiple of 64 for faster matmuls;
                                # resized back to 50257 before saving
 MICRO_BATCH_SIZE = 64          # packed rows per GPU per forward pass
-GRAD_ACCUM_STEPS = 1           # 64 * 1 * 2 GPUs = 128 rows per step
+GRAD_ACCUM_STEPS = 2           # 64 * 2 * 2 GPUs = 256 rows per step
 TRAIN_SECONDS = 29 * 60        # stop training this long after the script starts; the rest of the
                                # 30-min Slurm limit covers torchrun startup, saving and the final eval
 
@@ -31,7 +31,7 @@ WARMUP_STEPS = 300             # AdamW only; Muon starts at its full LR
 BETAS = (0.9, 0.98)
 ADAM_EPS = 1e-10
 
-MUON_LR = 0.007                # Muon on the 2D weights in the blocks
+MUON_LR = 0.02                 # Muon on the 2D weights in the blocks
 MUON_WEIGHT_DECAY = 0.05       # decoupled: weights shrink by MUON_LR * MUON_WEIGHT_DECAY per step at peak
 MUON_MOMENTUM = 0.95
 MUON_MOMENTUM_START = 0.85     # raised linearly to MUON_MOMENTUM over MUON_MOMENTUM_WARMUP steps

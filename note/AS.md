@@ -1,4 +1,4 @@
-lab4-yoru-AS-489288: AQ's hyperparameters (MUON_LR 0.01, FA3) on the faster code: LMLoss returns only the loss (no logits output), torch._dynamo optimize_ddp off (one compiled graph), no evals during training; plus a fix so wandb config skips the module F. First attempt 489285 crashed at wandb.init on that; vs AQ
+lab4-yoru-AS-489288: AQ's hyperparameters (MUON_LR 0.01, FA3) on the faster code: LMLoss returns only the loss (no logits output), torch._dynamo optimize_ddp off (one compiled graph), no evals during training; plus a fix so wandb config skips the module F. First attempt 489285 crashed at wandb.init on that; vs AQ; ~1028k tok/s, 6,760 steps (1.77B tokens), 29:31 total, final val loss 3.2314 (ppl 25.31)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py
