@@ -1,4 +1,4 @@
-lab4-yoru-AY-491242: AX's settings (KD_CE_WEIGHT 0.4) on the new pipeline: TRAIN_SECONDS 29*60+20, stop predicted before overrunning it, only the raw weights dumped in the job; stock GPT-2 save and val eval in script/finalize.py (job 491243, queued afterany); control for AZ/BA
+lab4-yoru-AY-491242: AX's settings (KD_CE_WEIGHT 0.4) on the new pipeline: TRAIN_SECONDS 29*60+20, stop predicted before overrunning it, only the raw weights dumped in the job; stock GPT-2 save and val eval in script/finalize.py (job 491243, queued afterany); control for AZ/BA; ~992k tok/s, 6,610 steps, train job 29:43 (17 s left), finalize 0:31, val loss 3.2032 (ppl 24.61), best so far: -0.004 vs AX from the extra time; uploaded to HF yorukot/gpt2-traning on 2026-10-04 (replacing AJ)
 ---
 DATA_DIR = "data/c4"
 SEQ_LEN = 1024                 # rows packed to this by prepare_data.py

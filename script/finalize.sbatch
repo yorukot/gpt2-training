@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --exclude=25a-hgpn001,25a-hgpn003,25a-hgpn062,25a-hgpn083,25a-hgpn146,25a-hgpn157
+#SBATCH --exclude=25a-hgpn001,25a-hgpn003,25a-hgpn062,25a-hgpn083,25a-hgpn145,25a-hgpn146,25a-hgpn157
 #SBATCH --output=finalize-%j.out
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"

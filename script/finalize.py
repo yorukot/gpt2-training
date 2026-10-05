@@ -12,6 +12,7 @@ Without a .raw.pt (runs from before this script) it only evaluates outputs/<run>
 import math
 import os
 import sys
+from typing import cast
 
 import torch
 import wandb
@@ -43,10 +44,12 @@ if converted:
     print(f"Saved the stock GPT-2 model to {out_dir}")
 
 # What the judge loads: the saved folder as a plain GPT2LMHeadModel.
-model, info = GPT2LMHeadModel.from_pretrained(out_dir, output_loading_info=True)
+# With output_loading_info the result is (model, info), which the type hints don't say.
+model, info = cast(tuple[GPT2LMHeadModel, dict], GPT2LMHeadModel.from_pretrained(out_dir, output_loading_info=True))
 assert not any(info.values()) and model.config.vocab_size == 50257, f"not a stock GPT-2 checkpoint: {info}"
 model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward
-model = model.to(device).eval()
+# ty misreads PreTrainedModel.to, which HF wraps with functools.wraps, as taking the model first.
+model = model.to(device).eval()  # ty: ignore[invalid-argument-type]
 
 # Positions restart at every document, so HF builds a mask that keeps the documents apart.
 val_rows = load_rows(DATA_DIR, "val", SEQ_LEN)

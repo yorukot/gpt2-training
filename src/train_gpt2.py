@@ -4,10 +4,12 @@ import time
 
 import torch
 import torch.distributed as dist
-import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from flash_attn_interface import flash_attn_varlen_func
+
+# FA3 is installed only in nano4's .venv-gpu (it needs CUDA), so a type checker on a CPU machine can't see it.
+from flash_attn_interface import flash_attn_varlen_func  # ty: ignore[unresolved-import]
+from torch import nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AttentionInterface, GPT2Config, GPT2LMHeadModel
 
@@ -86,8 +88,8 @@ def elapsed_seconds():
     return t.item()
 
 
-def varlen_attention(module, query, key, value, attention_mask, scaling=None, dropout=0.0,
-                     cu_seq_lens_q=None, max_length_q=None, **kwargs):
+def varlen_attention(module, query, key, value, attention_mask, scaling=None, dropout=0.0, *,
+                     cu_seq_lens_q: torch.Tensor, max_length_q: int, **kwargs):
     """Causal attention inside each document of the packed rows, split at cu_seq_lens_q.
 
     Same math as sdpa with HF's document mask, but no (rows, 1, SEQ_LEN, SEQ_LEN) mask is built
@@ -155,10 +157,11 @@ def shift(labels):
 # N(0, 0.02) init. Only the vocab padding differs from stock, and it is undone before saving.
 config = GPT2Config(
     vocab_size=VOCAB_SIZE, n_positions=SEQ_LEN, resid_pdrop=DROPOUT, embd_pdrop=DROPOUT, attn_pdrop=DROPOUT,
-    use_cache=False, attn_implementation="varlen",
+    use_cache=False,
 )
 with torch.device(device):
     raw_model = GPT2LMHeadModel(config)
+raw_model.set_attn_implementation("varlen")  # varlen_attention above
 raw_model.loss_type = "ForCausalLM"  # unset, HF logs a warning inside forward
 # One compiled graph instead of DDPOptimizer's ~14 pieces: ~2% faster per step on 2 GPUs
 # (script/throughput_check.py). The grad all-reduce then waits for the whole backward, which costs less on NVLink.
@@ -167,8 +170,9 @@ model = DDP(torch.compile(LMLoss(raw_model), fullgraph=True), device_ids=[device
 
 # Muon on the 2D weights in the blocks; AdamW on the embeddings (wte/lm_head and wpe), with weight
 # decay, and on the biases and LayerNorms, without. Optimizer only, so the saved weights are stock.
-blocks = [(b.attn.c_attn.weight, b.attn.c_proj.weight, b.mlp.c_fc.weight, b.mlp.c_proj.weight)
-          for b in raw_model.transformer.h]
+named = dict(raw_model.named_parameters())
+blocks = [tuple(named[f"transformer.h.{i}.{name}.weight"] for name in ("attn.c_attn", "attn.c_proj", "mlp.c_fc", "mlp.c_proj"))
+          for i in range(config.n_layer)]
 muon_ids = {id(p) for block in blocks for p in block}
 rest = [p for p in raw_model.parameters() if id(p) not in muon_ids]  # Tied wte/lm_head is listed once.
 embeds, scalars = [p for p in rest if p.dim() >= 2], [p for p in rest if p.dim() < 2]

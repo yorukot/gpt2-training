@@ -44,7 +44,8 @@ class Muon(torch.optim.Optimizer):
             self.state[p]["momentum"] = torch.zeros_like(p)
 
     @torch.no_grad()
-    def step(self):
+    def step(self, closure=None):
+        assert closure is None, "Muon does not take a closure"  # the parameter matches Optimizer.step
         group = self.param_groups[0]
         lr, weight_decay, momentum = group["lr"], group["weight_decay"], group["momentum"]
 
@@ -65,7 +66,9 @@ class Muon(torch.optim.Optimizer):
         for mats in (square, wide):  # the square gather runs while the wide batch is orthogonalized
             local = ns5(torch.stack(mats))
             out = local.new_empty((self.world * len(mats), *local.shape[1:]))
-            gathered.append((dist.all_gather_into_tensor(out, local, async_op=True), out))
+            work = dist.all_gather_into_tensor(out, local, async_op=True)
+            assert work is not None  # async_op=True always returns a handle
+            gathered.append((work, out))
         for work, _ in gathered:
             work.wait()
         square, wide = (out for _, out in gathered)
